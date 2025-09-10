@@ -704,6 +704,7 @@ class TradingPage(ttk.Frame):
 
     def _scalp_loop(self, symbol: str, tp: float, sl: float, size: float, strategy_name: str, batch_target: float):
         print("SCALP LOOP STARTED")
+        self._log(f"Scalping loop started for symbol: {symbol}")
         while self.is_scalping:
             # THIS IS THE KEY CHANGE: CREATE A NEW STRATEGY OBJECT IN EVERY LOOP
             if strategy_name == "Safe":

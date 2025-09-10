@@ -19,11 +19,8 @@ from dataclasses import dataclass
 @dataclass
 class AiAdvice:
     """Represents the advice received from the AI Overseer."""
-    action: str
-    confidence: float
-    sl_pips: Optional[float] = None
-    tp_pips: Optional[float] = None
-    reason: Optional[str] = None
+    regime: str
+    adx_value: float
 
 TREND_BAR_PERIOD_SECONDS = {
     ProtoOATrendbarPeriod.M1: 60,
@@ -1629,6 +1626,8 @@ class Trader:
         if not symbol_id:
             return False, f"Symbol '{symbol_name}' not found."
 
+        print(f"Placing market order for symbol: {symbol_name}")
+
         symbol_details = self.symbol_details_map.get(symbol_id)
         if not symbol_details:
             return False, f"Symbol details for '{symbol_name}' not loaded."
@@ -1684,26 +1683,13 @@ class Trader:
             traceback.print_exc() # Print full traceback for debugging
             return False, f"An exception occurred while placing the order: {e}"
 
-    def get_ai_advice(self, symbol_name: str, intent: str, features: dict, bot_proposal: dict) -> Optional[AiAdvice]:
+    def get_ai_advice(self, symbol_name: str, market_data: dict) -> Optional[AiAdvice]:
         """
         Sends data to the AI advisor and returns its recommendation.
         """
         if not self.settings.ai.use_ai_overseer or not self.settings.ai.advisor_url:
             print("AI Overseer is disabled or URL is not configured.")
             return None
-
-        if not symbol_name:
-            print("Cannot get AI advice: symbol_name not provided.")
-            return None
-
-        payload = {
-            "pair": symbol_name.replace("/", ""),
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "timeframe": "M1", # Hardcoded as per C# example
-            "intent": intent,
-            "features": features,
-            "bot_proposal": bot_proposal
-        }
 
         headers = {
             "Content-Type": "application/json"
@@ -1714,10 +1700,10 @@ class Trader:
         timeout_seconds = self.settings.ai.advisor_timeout_ms / 1000.0
 
         try:
-            print(f"Sending payload to AI Advisor: {json.dumps(payload, indent=2)}")
+            print(f"Sending payload to AI Advisor: {json.dumps(market_data, indent=2)}")
             response = requests.post(
                 self.settings.ai.advisor_url,
-                json=payload,
+                json=market_data,
                 headers=headers,
                 timeout=timeout_seconds
             )
@@ -1726,29 +1712,16 @@ class Trader:
             data = response.json()
             print(f"Received response from AI Advisor: {data}")
 
-            # Normalize response keys (similar to C# example)
-            action = data.get("action") or data.get("direction")
-            if isinstance(action, str):
-                action = action.lower()
-                if action == "buy": action = "long"
-                if action == "sell": action = "short"
+            regime = data.get("regime")
+            adx_value = data.get("adx_value")
 
-            confidence = data.get("confidence")
-            if confidence is None:
-                confidence_pct = data.get("confidence_pct")
-                if confidence_pct is not None:
-                    confidence = float(confidence_pct) / 100.0
-
-            if action not in ["long", "short", "skip", "hold"] or confidence is None:
-                print(f"AI Advisor returned invalid advice: action='{action}', conf={confidence}")
+            if regime not in ["TRENDING_UP", "TRENDING_DOWN", "RANGING"] or adx_value is None:
+                print(f"AI Advisor returned invalid advice: regime='{regime}', adx_value={adx_value}")
                 return None
 
             return AiAdvice(
-                action=action,
-                confidence=float(confidence),
-                sl_pips=data.get("sl_pips"),
-                tp_pips=data.get("tp_pips"),
-                reason=data.get("reason", "No reason provided.")
+                regime=regime,
+                adx_value=float(adx_value)
             )
 
         except requests.exceptions.Timeout:
@@ -1757,7 +1730,7 @@ class Trader:
         except requests.exceptions.RequestException as e:
             print(f"Error communicating with AI Advisor: {e}")
             return None
-        except (json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
             print(f"Error parsing AI Advisor response: {e}")
             return None
             
