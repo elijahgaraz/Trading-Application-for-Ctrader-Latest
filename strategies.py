@@ -172,16 +172,6 @@ class SafeStrategy(Strategy):
             print("Returning: insufficient data")
             return self._hold("insufficient data")
 
-        # Session filter with robust timestamp handling
-        print("DEBUG - df.index:", df.index)
-        print("DEBUG - df.index[-1]:", df.index[-1] if len(df.index) else None, type(df.index[-1]) if len(df.index) else None)
-
-        now_raw = self._extract_latest_ts(df)
-        now_local = self._to_session_dt(now_raw)
-        print(f"DEBUG - now_raw={now_raw!r} type={type(now_raw)}, now_local={now_local} [{self.session_zone}]")
-
-        if not self.in_session(now_raw):
-            return self._hold("outside trading session")
 
         close = df['close']
         vol = df.get('volume', pd.Series(dtype=float))
