@@ -1894,12 +1894,20 @@ class Trader:
         print(f"Received ProtoOAGetTrendbarsRes for symbol ID {response.symbolId}, period {ProtoOATrendbarPeriod.Name(response.period)} with {len(response.trendbar)} bars.")
 
         symbol_id = response.symbolId
-        period_enum = response.period # This is the ProtoOATrendbarPeriod enum value
+        symbol_name = None
+        for name, s_id in self.symbols_map.items():
+            if s_id == symbol_id:
+                symbol_name = name
+                break
 
+        if not symbol_name:
+            print(f"Warning: Trendbar response for unknown symbol ID {symbol_id}. Cannot process.")
+            return
+
+        period_enum = response.period
         tf_str_map = {
             ProtoOATrendbarPeriod.M1: '1m',
             ProtoOATrendbarPeriod.M5: '5m',
-            
         }
         tf_str = tf_str_map.get(period_enum)
         if not tf_str:
@@ -1908,22 +1916,19 @@ class Trader:
 
         symbol_details = self.symbol_details_map.get(symbol_id)
         if not symbol_details or not hasattr(symbol_details, 'digits'):
-            print(f"Warning: Symbol details (especially digits) not found for symbol ID {symbol_id}. Cannot accurately process trendbar prices.")
+            print(f"Warning: Symbol details not found for symbol ID {symbol_id}. Cannot accurately process trendbar prices.")
             return
 
         price_scale_factor = 10**symbol_details.digits
 
         processed_bars = []
         for bar_data in response.trendbar:
-            
             ts_millis = bar_data.utcTimestampInMinutes * 60 * 1000
             dt_object = datetime.fromtimestamp(ts_millis / 1000, tz=timezone.utc)
-
             low_price = bar_data.low / price_scale_factor
             open_price = (bar_data.low + bar_data.deltaOpen) / price_scale_factor
             high_price = (bar_data.low + bar_data.deltaHigh) / price_scale_factor
             close_price = (bar_data.low + bar_data.deltaClose) / price_scale_factor
-
             processed_bars.append({
                 'timestamp': dt_object,
                 'open': open_price,
@@ -1934,25 +1939,23 @@ class Trader:
             })
 
         if not processed_bars:
-            print(f"No bars processed from ProtoOAGetTrendbarsRes for {tf_str}.")
+            print(f"No bars processed from ProtoOAGetTrendbarsRes for {symbol_name} {tf_str}.")
             return
 
-        # Sort bars by timestamp just in case API doesn't guarantee it (it usually does)
         processed_bars.sort(key=lambda x: x['timestamp'])
-
         new_df = pd.DataFrame(processed_bars)
 
-        self.ohlc_history[tf_str] = new_df
-        print(f"Populated {tf_str} OHLC history with {len(new_df)} bars for symbol ID {symbol_id}. Last bar timestamp: {new_df.iloc[-1]['timestamp'] if not new_df.empty else 'N/A'}")
+        if symbol_name not in self.ohlc_history:
+            self._initialize_data_for_symbol(symbol_name)
 
-        
+        self.ohlc_history[symbol_name][tf_str] = new_df
+        print(f"Populated {tf_str} OHLC history for {symbol_name} with {len(new_df)} bars. Last bar timestamp: {new_df.iloc[-1]['timestamp'] if not new_df.empty else 'N/A'}")
+
         if not new_df.empty:
-            last_hist_bar = new_df.iloc[-1]
-            
-            self.current_bars[tf_str] = {
+            self.current_bars[symbol_name][tf_str] = {
                 'timestamp': None, 'open': None, 'high': None, 'low': None, 'close': None, 'volume': 0
             }
-            print(f"Reset current_bar for {tf_str} to allow live aggregation post-history fetch.")
+            print(f"Reset current_bar for {symbol_name} {tf_str} to allow live aggregation post-history fetch.")
 
         # Potentially, trigger a GUI update for data readiness explicitly here if needed,
         # though the periodic GUI poll should pick it up.
