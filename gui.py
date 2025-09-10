@@ -549,41 +549,34 @@ class TradingPage(ttk.Frame):
         try:
             # 1. Gather data
             symbol = self.symbol_var.get().replace("/", "")
-            price = self.trader.get_market_price(symbol)
             ohlc_1m_df = self.trader.ohlc_history.get('1m', pd.DataFrame())
 
-            if price is None or ohlc_1m_df.empty:
-                self.controller._ui_queue.put(("show_ai_error", ("Could not perform analysis: Market data is missing.",)))
+            if ohlc_1m_df.empty or len(ohlc_1m_df) < 50:
+                self.controller._ui_queue.put(("show_ai_error", "Could not perform analysis: Market data is missing or insufficient (need 50 bars)."))
                 return
 
             # 2. Calculate all required indicators
-            # Using default periods from the C# script for this manual analysis
-            fast_ema = calculate_ema(ohlc_1m_df, 9).iloc[-1]
-            slow_ema = calculate_ema(ohlc_1m_df, 21).iloc[-1]
-            rsi = calculate_rsi(ohlc_1m_df, 14).iloc[-1]
-            atr = calculate_atr(ohlc_1m_df, 14).iloc[-1]
-            adx_df = calculate_adx(ohlc_1m_df, 14)
-            adx = adx_df[f'ADX_14'].iloc[-1] if not adx_df.empty else 0
+            closes = ohlc_1m_df['close'].tail(50).to_list()
+            ema_fast = calculate_ema(ohlc_1m_df, 9).tail(50).to_list()
+            ema_slow = calculate_ema(ohlc_1m_df, 21).tail(50).to_list()
+            adx_series = calculate_adx(ohlc_1m_df, 14)[f'ADX_14']
+            adx = adx_series.tail(50).to_list()
 
-            # 3. Construct payload dictionaries
-            features = {
-                "price_bid": price,
-                "ema_fast": fast_ema,
-                "ema_slow": slow_ema,
-                "rsi": rsi,
-                "adx": adx,
-                "atr": atr,
-                "spread_pips": 0 # Not easily available here, sending 0
-            }
-            bot_proposal = {
-                "side": "n/a", # No bot proposal for manual analysis
-                "sl_pips": self.sl_var.get(),
-                "tp_pips": self.tp_var.get()
+            if any(len(lst) < 50 for lst in [closes, ema_fast, ema_slow, adx]):
+                 self.controller._ui_queue.put(("show_ai_error", "Could not perform analysis: Indicator calculation resulted in less than 50 data points."))
+                 return
+
+            # 3. Construct payload
+            market_data = {
+                "pair": symbol.replace("/", ""),
+                "closes": closes,
+                "ema_fast": ema_fast,
+                "ema_slow": ema_slow,
+                "adx": adx
             }
 
             # 4. Call the trader's AI advice method
-            # We assume 'long' intent for manual analysis; the AI should evaluate based on features regardless
-            advice = self.trader.get_ai_advice(symbol, "long", features, bot_proposal)
+            advice = self.trader.get_ai_advice(symbol, market_data)
 
             # 5. Queue the result for display on the main thread
             if advice:
@@ -599,13 +592,11 @@ class TradingPage(ttk.Frame):
 
     def _show_ai_advice(self, advice: AiAdvice):
         """Displays the AI advice in a messagebox. Runs on the main UI thread."""
-        self._log(f"ChatGPT Analysis Result: {advice.action.upper()} (Conf: {advice.confidence:.2%}) - {advice.reason}")
+        self._log(f"ChatGPT Analysis Result: Regime={advice.regime}, ADX={advice.adx_value:.2f}")
         messagebox.showinfo(
             "ChatGPT Analysis",
-            f"Direction: {advice.action.upper()}\n"
-            f"Confidence: {advice.confidence:.2%}\n\n"
-            f"Reason: {advice.reason}\n\n"
-            f"(Proposed SL/TP: {advice.sl_pips} / {advice.tp_pips} pips)"
+            f"Market Regime: {advice.regime}\n"
+            f"ADX Value: {advice.adx_value:.2f}"
         )
 
     def _show_ai_error(self, message: str):
