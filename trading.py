@@ -218,6 +218,9 @@ class Trader:
         self._http_server_thread: Optional[threading.Thread] = None
         self._http_server: Optional[HTTPServer] = None
 
+        # Cache for AI advice
+        self._ai_advice_cache: Dict[str, Tuple[AiAdvice, float]] = {}
+
     def _save_tokens_to_file(self):
         """Saves the current OAuth access token, refresh token, and expiry time to TOKEN_FILE_PATH."""
         tokens = {
@@ -1686,7 +1689,15 @@ class Trader:
     def get_ai_advice(self, symbol_name: str, market_data: dict) -> Optional[AiAdvice]:
         """
         Sends data to the AI advisor and returns its recommendation.
+        Includes a 10-minute cache to avoid excessive API calls.
         """
+        # Check cache first
+        if symbol_name in self._ai_advice_cache:
+            cached_advice, timestamp = self._ai_advice_cache[symbol_name]
+            if time.time() - timestamp < 600: # 10 minutes
+                print(f"Returning cached AI advice for {symbol_name}.")
+                return cached_advice
+
         if not self.settings.ai.use_ai_overseer or not self.settings.ai.advisor_url:
             print("AI Overseer is disabled or URL is not configured.")
             return None
@@ -1719,10 +1730,15 @@ class Trader:
                 print(f"AI Advisor returned invalid advice: regime='{regime}', adx_value={adx_value}")
                 return None
 
-            return AiAdvice(
+            advice = AiAdvice(
                 regime=regime,
                 adx_value=float(adx_value)
             )
+
+            # Store successful response in cache
+            self._ai_advice_cache[symbol_name] = (advice, time.time())
+
+            return advice
 
         except requests.exceptions.Timeout:
             print(f"AI Advisor request timed out after {timeout_seconds} seconds.")
