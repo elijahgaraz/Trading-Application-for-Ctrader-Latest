@@ -325,7 +325,7 @@ class TradingPage(ttk.Frame):
         self.cb_symbol = ttk.Combobox(self, textvariable=self.symbol_var,
                                  values=[], state="readonly") # Initially empty
         self.cb_symbol.grid(row=2, column=1, sticky="ew") # Corrected from row=1
-        self.cb_symbol.bind("<<ComboboxSelected>>", lambda e: self.refresh_price())
+        self.cb_symbol.bind("<<ComboboxSelected>>", self._on_symbol_selected)
 
         # Price display + refresh
         ttk.Label(self, text="Price:").grid(row=3, column=0, sticky="w", padx=(0,5)) # Was row=2
@@ -451,7 +451,8 @@ class TradingPage(ttk.Frame):
             return
 
         required_bars_map = strategy_instance.get_required_bars()
-        available_bars_map = self.trader.get_ohlc_bar_counts()
+        symbol = self.symbol_var.get()
+        available_bars_map = self.trader.get_ohlc_bar_counts(symbol)
 
         status_messages = []
         all_ready = True
@@ -514,6 +515,12 @@ class TradingPage(ttk.Frame):
         else:
             self.price_var.set("–") # Ensure price is reset if no valid symbol selected
 
+    def _on_symbol_selected(self, event=None):
+        """Handles the event when a new symbol is selected."""
+        symbol = self.symbol_var.get().replace("/", "")
+        if symbol:
+            self.trader.subscribe_to_symbol(symbol)
+            self.refresh_price()
 
     def update_account_info(self, account_id: str, balance: float | None, equity: float | None, margin: float | None):
         """Public method to update account info StringVars from the controller."""
@@ -549,7 +556,7 @@ class TradingPage(ttk.Frame):
         try:
             # 1. Gather data
             symbol = self.symbol_var.get().replace("/", "")
-            ohlc_1m_df = self.trader.ohlc_history.get('1m', pd.DataFrame())
+            ohlc_1m_df = self.trader.get_ohlc_history(symbol, '1m')
 
             if ohlc_1m_df.empty or len(ohlc_1m_df) < 50:
                 self.controller._ui_queue.put(("show_ai_error", "Could not perform analysis: Market data is missing or insufficient (need 50 bars)."))
@@ -727,20 +734,16 @@ class TradingPage(ttk.Frame):
             current_tick_price = self.trader.get_market_price(symbol)
             print(f"Tick price: {current_tick_price}")
 
-            # Fetch OHLC data. Data is already prepared in trading.py
-            ohlc_1m_df = self.trader.ohlc_history.get('1m', pd.DataFrame())
+            # Fetch OHLC data for the correct symbol
+            ohlc_1m_df = self.trader.get_ohlc_history(symbol, '1m')
+            ohlc_15s_df = self.trader.get_ohlc_history(symbol, '15s')
             
-            # BUG FIX: Removed redundant and buggy dataframe processing.
-            # The dataframe from trader.ohlc_history is already indexed by timestamp.
-            # The previous logic would fail after the first trade because the index
-            # was no longer a RangeIndex.
-
             # Strategy decision
             action_details = strategy.decide(
                 symbol,
                 {
                     'ohlc_1m': ohlc_1m_df,
-                    'ohlc_15s': self.trader.ohlc_history.get('15s', pd.DataFrame()),
+                    'ohlc_15s': ohlc_15s_df,
                     'current_equity': self.trader.equity,
                     'pip_position': None,
                     'current_price_tick': current_tick_price
