@@ -607,69 +607,53 @@ class Trader:
             self._last_error = f"Default symbol '{self.settings.general.default_symbol}' not found."
 
     def _handle_symbol_details_response(self, response_wrapper: Any) -> None:
-        """Handles the response from a ProtoOASymbolByIdReq, containing full symbol details."""
+        """
+        Handles the response from a ProtoOASymbolByIdReq.
+        This is now the central trigger for loading data for a new symbol.
+        """
         if isinstance(response_wrapper, ProtoMessage):
             actual_message = Protobuf.extract(response_wrapper)
-            print(f"_handle_symbol_details_response: Extracted {type(actual_message)} from ProtoMessage wrapper.")
         else:
             actual_message = response_wrapper
 
         if not isinstance(actual_message, ProtoOASymbolByIdRes):
             print(f"_handle_symbol_details_response: Expected ProtoOASymbolByIdRes, got {type(actual_message)}. Message: {actual_message}")
             self._last_error = "Symbol details response was not ProtoOASymbolByIdRes."
-            # Potentially try to re-request or handle error for specific symbols if needed.
             return
 
         print(f"Received ProtoOASymbolByIdRes with details for {len(actual_message.symbol)} symbol(s).")
 
-        for detailed_symbol_proto in actual_message.symbol: # These are full ProtoOASymbol objects
-            # ProtoOASymbol does not have symbolName, get it from symbols_map
-            symbol_name_for_logging = "Unknown"
-            for name, id_val in self.symbols_map.items():
-                if id_val == detailed_symbol_proto.symbolId:
-                    symbol_name_for_logging = name
+        for detailed_symbol_proto in actual_message.symbol:
+            symbol_id = detailed_symbol_proto.symbolId
+            symbol_name = "Unknown"
+            for name, s_id in self.symbols_map.items():
+                if s_id == symbol_id:
+                    symbol_name = name
                     break
 
-            self.symbol_details_map[detailed_symbol_proto.symbolId] = detailed_symbol_proto
-            print(f"  Stored full details for Symbol ID: {detailed_symbol_proto.symbolId} ({symbol_name_for_logging}), Digits: {detailed_symbol_proto.digits}, PipPosition: {detailed_symbol_proto.pipPosition}")
+            if symbol_name == "Unknown":
+                print(f"Warning: Received details for unknown symbol ID {symbol_id}")
+                continue
 
-        # After updating the details map, check if we have details for the default symbol
-        # and if so, proceed to subscribe for its spot prices.
-        if self.default_symbol_id is not None and self.default_symbol_id in self.symbol_details_map:
-            # Get the default symbol's name from symbols_map for logging
-            default_symbol_name_for_logging = "Unknown"
-            for name, id_val in self.symbols_map.items():
-                if id_val == self.default_symbol_id:
-                    default_symbol_name_for_logging = name
-                    break
+            # Store details and kick off the data loading process
+            self.symbol_details_map[symbol_id] = detailed_symbol_proto
+            print(f"Stored full details for {symbol_name} (ID: {symbol_id}). Kicking off data loading.")
 
-            self._initialize_data_for_symbol(default_symbol_name_for_logging)
+            self._initialize_data_for_symbol(symbol_name)
 
-            print(f"Full details for default symbol '{default_symbol_name_for_logging}' (ID: {self.default_symbol_id}) received. Subscribing to spots.")
-
-            # Ensure ctidTraderAccountId is available before subscribing
-            if self.ctid_trader_account_id is not None:
-                # Fetch historical data for 1m timeframe for the default symbol
-                # Assuming M1 is ProtoOATrendbarPeriod.M1
-                # Fetch max_ohlc_history_len bars (e.g., 200)
-                print(f"Fetching initial historical 1m trendbars for default symbol {default_symbol_name_for_logging} (ID: {self.default_symbol_id}).")
+            if self.ctid_trader_account_id:
+                # Fetch historical data
                 self._send_get_trendbars_request(
-                    symbol_id=self.default_symbol_id,
-                    period=ProtoOATrendbarPeriod.M1, # Assuming M1 is the desired period
+                    symbol_id=symbol_id,
+                    period=ProtoOATrendbarPeriod.M1,
                     count=self.max_ohlc_history_len
                 )
-                # Note: We might want to fetch for other timeframes too if strategies use them.
-                # For now, focusing on '1m'.
-
-                # After requesting historical data, subscribe to live spots
-                self._send_subscribe_spots_request(self.ctid_trader_account_id, [self.default_symbol_id])
-                self.subscribed_spot_symbol_ids.add(self.default_symbol_id)
+                # Subscribe to live spots
+                self._send_subscribe_spots_request(self.ctid_trader_account_id, [symbol_id])
+                self.subscribed_spot_symbol_ids.add(symbol_id)
             else:
-                print(f"Error: ctidTraderAccountId not set. Cannot subscribe to spots or fetch history for {default_symbol_name_for_logging}.")
-                self._last_error = "ctidTraderAccountId not available for spot subscription after getting symbol details."
-        elif self.default_symbol_id is not None:
-            # This case should ideally not be hit if ProtoOASymbolByIdReq was successful for default_symbol_id
-            print(f"Warning: Full details for default symbol ID {self.default_symbol_id} not found in response, cannot subscribe to its spots yet.")
+                print(f"Error: ctidTraderAccountId not set. Cannot subscribe to spots or fetch history for {symbol_name}.")
+                self._last_error = "ctidTraderAccountId not available for spot subscription."
 
 
     def _handle_account_auth_response(self, response: ProtoOAAccountAuthRes) -> None:
@@ -1768,33 +1752,25 @@ class Trader:
             return None
 
     def subscribe_to_symbol(self, symbol_name: str):
-        """Subscribes to spot data for a given symbol if not already subscribed."""
+        """
+        Ensures the application has all necessary data for a symbol.
+        If details are missing, it requests them. The response handler will then
+        trigger the rest of the data loading (history, live subscription).
+        If details are present, it does nothing, assuming data is loaded or loading.
+        """
         symbol_id = self.symbols_map.get(symbol_name)
         if not symbol_id:
             print(f"Error: Cannot subscribe to unknown symbol '{symbol_name}'")
             return
 
-        if symbol_id in self.subscribed_spot_symbol_ids:
-            print(f"Already subscribed to {symbol_name} (ID: {symbol_id}).")
+        # If we already have full details, we assume subscriptions are active or in progress.
+        if symbol_id in self.symbol_details_map:
+            print(f"Symbol {symbol_name} details already known. No action needed.")
             return
 
-        print(f"Subscribing to new symbol: {symbol_name} (ID: {symbol_id})")
-
-        self._initialize_data_for_symbol(symbol_name)
-
-        if self.ctid_trader_account_id:
-            # Fetch historical data first
-            self._send_get_trendbars_request(
-                symbol_id=symbol_id,
-                period=ProtoOATrendbarPeriod.M1,
-                count=self.max_ohlc_history_len
-            )
-            # Then subscribe to live spots
-            self._send_subscribe_spots_request(self.ctid_trader_account_id, [symbol_id])
-            self.subscribed_spot_symbol_ids.add(symbol_id)
-        else:
-            print(f"Error: ctidTraderAccountId not set. Cannot subscribe to spots for {symbol_name}.")
-            self._last_error = "ctidTraderAccountId not available for spot subscription."
+        # If details are not present, we must fetch them first.
+        print(f"Details for {symbol_name} not found. Requesting them now.")
+        self._send_get_symbol_details_request([symbol_id])
 
     def _handle_execution_event(self, event: ProtoOAExecutionEvent) -> None:
         # TODO: handle executions
