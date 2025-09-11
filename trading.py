@@ -19,8 +19,10 @@ from dataclasses import dataclass
 @dataclass
 class AiAdvice:
     """Represents the advice received from the AI Overseer."""
-    regime: str
-    adx_value: float
+    direction: str
+    confidence: float
+    reason: str
+    as_of: str
 
 TREND_BAR_PERIOD_SECONDS = {
     ProtoOATrendbarPeriod.M1: 60,
@@ -1687,11 +1689,16 @@ class Trader:
             traceback.print_exc() # Print full traceback for debugging
             return False, f"An exception occurred while placing the order: {e}"
 
-    def get_ai_advice(self, symbol_name: str, market_data: dict) -> Optional[AiAdvice]:
+    def get_ai_advice(self, snapshot: dict) -> Optional[AiAdvice]:
         """
-        Sends data to the AI advisor and returns its recommendation.
+        Sends a snapshot to the AI advisor and returns its recommendation.
         Includes a 10-minute cache to avoid excessive API calls.
         """
+        symbol_name = snapshot.get("symbol")
+        if not symbol_name:
+            print("Error: 'symbol' is a required key in the AI advice snapshot.")
+            return None
+
         # Check cache first
         if symbol_name in self._ai_advice_cache:
             cached_advice, timestamp = self._ai_advice_cache[symbol_name]
@@ -1712,10 +1719,10 @@ class Trader:
         timeout_seconds = self.settings.ai.advisor_timeout_ms / 1000.0
 
         try:
-            print(f"Sending payload to AI Advisor: {json.dumps(market_data, indent=2)}")
+            print(f"Sending snapshot to AI Advisor: {json.dumps(snapshot, indent=2)}")
             response = requests.post(
                 self.settings.ai.advisor_url,
-                json=market_data,
+                json=snapshot,
                 headers=headers,
                 timeout=timeout_seconds
             )
@@ -1724,16 +1731,20 @@ class Trader:
             data = response.json()
             print(f"Received response from AI Advisor: {data}")
 
-            regime = data.get("regime")
-            adx_value = data.get("adx_value")
+            direction = data.get("direction")
+            confidence_pct = data.get("confidence_pct")
+            reason = data.get("reason")
+            as_of = data.get("as_of")
 
-            if regime not in ["TRENDING_UP", "TRENDING_DOWN", "RANGING"] or adx_value is None:
-                print(f"AI Advisor returned invalid advice: regime='{regime}', adx_value={adx_value}")
+            if not all([direction, confidence_pct, reason, as_of]):
+                print(f"AI Advisor returned incomplete advice: {data}")
                 return None
 
             advice = AiAdvice(
-                regime=regime,
-                adx_value=float(adx_value)
+                direction=direction,
+                confidence=float(confidence_pct) / 100.0,
+                reason=reason,
+                as_of=as_of
             )
 
             # Store successful response in cache
@@ -1747,7 +1758,7 @@ class Trader:
         except requests.exceptions.RequestException as e:
             print(f"Error communicating with AI Advisor: {e}")
             return None
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             print(f"Error parsing AI Advisor response: {e}")
             return None
 
