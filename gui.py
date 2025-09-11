@@ -556,34 +556,39 @@ class TradingPage(ttk.Frame):
         try:
             # 1. Gather data
             symbol = self.symbol_var.get().replace("/", "")
+            price = self.trader.get_market_price(symbol)
             ohlc_1m_df = self.trader.get_ohlc_history(symbol, '1m')
 
-            if ohlc_1m_df.empty or len(ohlc_1m_df) < 50:
-                self.controller._ui_queue.put(("show_ai_error", "Could not perform analysis: Market data is missing or insufficient (need 50 bars)."))
+            if price is None or ohlc_1m_df.empty:
+                self.controller._ui_queue.put(("show_ai_error", "Could not perform analysis: Market data is missing."))
                 return
 
             # 2. Calculate all required indicators
-            closes = ohlc_1m_df['close'].tail(50).to_list()
-            ema_fast = calculate_ema(ohlc_1m_df, 9).tail(50).to_list()
-            ema_slow = calculate_ema(ohlc_1m_df, 21).tail(50).to_list()
+            ema_fast = calculate_ema(ohlc_1m_df, 9).iloc[-1]
+            ema_slow = calculate_ema(ohlc_1m_df, 21).iloc[-1]
+            rsi = calculate_rsi(ohlc_1m_df, 14).iloc[-1]
+            atr = calculate_atr(ohlc_1m_df, 14).iloc[-1]
             adx_series = calculate_adx(ohlc_1m_df, 14)[f'ADX_14']
-            adx = adx_series.tail(50).to_list()
+            adx = adx_series.iloc[-1] if not adx_series.empty else 0
+            pip_factor = 10000
+            atr_pips = atr * pip_factor
 
-            if any(len(lst) < 50 for lst in [closes, ema_fast, ema_slow, adx]):
-                 self.controller._ui_queue.put(("show_ai_error", "Could not perform analysis: Indicator calculation resulted in less than 50 data points."))
-                 return
-
-            # 3. Construct payload
-            market_data = {
-                "pair": symbol.replace("/", ""),
-                "closes": closes,
+            # 3. Construct snapshot payload
+            snapshot = {
+                "symbol": symbol.replace("/", ""),
+                "bot_intent": "n/a", # No intent for manual analysis
+                "timeframe": "m1",
+                "price": price,
+                "spread_pips": 0.5, # Mocking spread
                 "ema_fast": ema_fast,
                 "ema_slow": ema_slow,
-                "adx": adx
+                "rsi": rsi,
+                "adx": adx,
+                "atr_pips": atr_pips
             }
 
             # 4. Call the trader's AI advice method
-            advice = self.trader.get_ai_advice(symbol, market_data)
+            advice = self.trader.get_ai_advice(snapshot)
 
             # 5. Queue the result for display on the main thread
             if advice:
@@ -599,11 +604,12 @@ class TradingPage(ttk.Frame):
 
     def _show_ai_advice(self, advice: AiAdvice):
         """Displays the AI advice in a messagebox. Runs on the main UI thread."""
-        self._log(f"ChatGPT Analysis Result: Regime={advice.regime}, ADX={advice.adx_value:.2f}")
+        self._log(f"ChatGPT Analysis Result: {advice.direction.upper()} (Conf: {advice.confidence:.2%}) - {advice.reason}")
         messagebox.showinfo(
             "ChatGPT Analysis",
-            f"Market Regime: {advice.regime}\n"
-            f"ADX Value: {advice.adx_value:.2f}"
+            f"Direction: {advice.direction.upper()}\n"
+            f"Confidence: {advice.confidence:.2%}\n\n"
+            f"Reason: {advice.reason}"
         )
 
     def _show_ai_error(self, message: str):
