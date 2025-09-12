@@ -325,10 +325,9 @@ class SettingsPage(ttk.Frame):
 
     def _log_to_trading_page(self, message: str):
         """Helper to log messages to the TradingPage's output log if available."""
-        if TradingPage in self.controller.pages:
-            trading_page = self.controller.pages[TradingPage]
-            if hasattr(trading_page, '_log'):
-                trading_page._log(f"[SettingsPage] {message}") # Prefix to identify source
+        if self.controller.trading_page:
+            if hasattr(self.controller.trading_page, '_log'):
+                self.controller.trading_page._log(f"[SettingsPage] {message}")
 
 
 class TradingPage(ttk.Frame):
