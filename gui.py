@@ -63,18 +63,25 @@ class MainApplication(ThemedTk):
             while True:
                 msg_type, data = self._ui_queue.get_nowait()
 
-                # Find the target page
-                trading_page = self.pages[TradingPage]
+                trading_page = self.trading_page
+                settings_page = self.settings_page
 
                 if msg_type == "account_update":
-                    for page in self.pages.values():
-                        if hasattr(page, "update_account_info"):
-                            page.update_account_info(
-                                account_id=data.get("account_id", "–"),
-                                balance=data.get("balance"),
-                                equity=data.get("equity"),
-                                margin=data.get("margin")
-                            )
+                    # Directly update the pages that have this method
+                    if hasattr(settings_page, "update_account_info"):
+                        settings_page.update_account_info(
+                            account_id=data.get("account_id", "–"),
+                            balance=data.get("balance"),
+                            equity=data.get("equity"),
+                            margin=data.get("margin")
+                        )
+                    if hasattr(trading_page, "update_account_info"):
+                         trading_page.update_account_info(
+                            account_id=data.get("account_id", "–"),
+                            balance=data.get("balance"),
+                            equity=data.get("equity"),
+                            margin=data.get("margin")
+                        )
                 elif msg_type == "show_ai_advice":
                     trading_page._show_ai_advice(data)
                 elif msg_type == "show_ai_error":
