@@ -42,12 +42,26 @@ class AISettings:
     advisor_timeout_ms: int = 7000
     advisor_min_confidence: float = 0.65
 
+@dataclass
+class StrategySettings:
+    """Settings for the trading strategy."""
+    ema_period: int = 50
+    atr_period: int = 14
+    adx_period: int = 14
+    rsi_period: int = 14
+    adx_threshold: int = 25
+    rsi_overbought: int = 70
+    rsi_oversold: int = 30
+    stop_mult: float = 1.0
+    target_mult: float = 0.5
+    buffer_mult: float = 0.05
 
 @dataclass
 class Settings:
     openapi: OpenAPISettings
     general: GeneralSettings
     ai: AISettings
+    strategy: StrategySettings
 
     @staticmethod
     def load(path: str = "config.json") -> "Settings":
@@ -68,6 +82,7 @@ class Settings:
         openapi_cfg = cfg_data.get("openapi", {})
         general_cfg = cfg_data.get("general", {})
         ai_cfg = cfg_data.get("ai", {})
+        strategy_cfg = cfg_data.get("strategy", {})
 
         # Prioritize env vars for secrets, then config file, then None
         client_id = env_client_id if env_client_id else openapi_cfg.get("client_id")
@@ -104,7 +119,20 @@ class Settings:
             advisor_min_confidence=ai_cfg.get("advisor_min_confidence", 0.65)
         )
 
-        return Settings(openapi=openapi_settings, general=general_settings, ai=ai_settings)
+        strategy_settings = StrategySettings(
+            ema_period=strategy_cfg.get("ema_period", 50),
+            atr_period=strategy_cfg.get("atr_period", 14),
+            adx_period=strategy_cfg.get("adx_period", 14),
+            rsi_period=strategy_cfg.get("rsi_period", 14),
+            adx_threshold=strategy_cfg.get("adx_threshold", 25),
+            rsi_overbought=strategy_cfg.get("rsi_overbought", 70),
+            rsi_oversold=strategy_cfg.get("rsi_oversold", 30),
+            stop_mult=strategy_cfg.get("stop_mult", 1.0),
+            target_mult=strategy_cfg.get("target_mult", 0.5),
+            buffer_mult=strategy_cfg.get("buffer_mult", 0.05),
+        )
+
+        return Settings(openapi=openapi_settings, general=general_settings, ai=ai_settings, strategy=strategy_settings)
 
     def save(self, path: str = "config.json") -> None:
         # Create a representation of settings that is safe to save (e.g., without tokens)
@@ -141,6 +169,18 @@ class Settings:
                 "advisor_auth_token": self.ai.advisor_auth_token if not os.environ.get("ADVISOR_AUTH_TOKEN") else None,
                 "advisor_timeout_ms": self.ai.advisor_timeout_ms,
                 "advisor_min_confidence": self.ai.advisor_min_confidence
+            },
+            "strategy": {
+                "ema_period": self.strategy.ema_period,
+                "atr_period": self.strategy.atr_period,
+                "adx_period": self.strategy.adx_period,
+                "rsi_period": self.strategy.rsi_period,
+                "adx_threshold": self.strategy.adx_threshold,
+                "rsi_overbought": self.strategy.rsi_overbought,
+                "rsi_oversold": self.strategy.rsi_oversold,
+                "stop_mult": self.strategy.stop_mult,
+                "target_mult": self.strategy.target_mult,
+                "buffer_mult": self.strategy.buffer_mult,
             }
         }
         with open(path, 'w') as f:

@@ -7,8 +7,7 @@ from typing import List, Dict, Any # Added for type hinting
 import pandas as pd # Added for OHLC data handling
 from trading import Trader, AiAdvice # adjust import path if needed
 from strategies import (
-    SafeStrategy, ModerateStrategy, AggressiveStrategy,
-    MomentumStrategy, MeanReversionStrategy
+    SafeStrategy
 )
 from indicators import (
     calculate_ema, calculate_atr, calculate_rsi, calculate_adx
@@ -29,22 +28,30 @@ class MainApplication(ThemedTk):
         self.trader = Trader(self.settings, on_account_update=self._handle_account_update)
         self.after(100, self._process_ui_queue)
 
+        # Create a notebook for tabbed navigation
+        self.notebook = ttk.Notebook(self)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
 
-        container = ttk.Frame(self)
-        container.grid(row=0, column=0, sticky="nsew")
-        container.rowconfigure(0, weight=1)
-        container.columnconfigure(0, weight=1)
+        # Create pages
+        self.trading_page = TradingPage(self.notebook, self)
+        self.strategy_page = StrategyPage(self.notebook, self)
+        self.settings_page = SettingsPage(self.notebook, self)
 
-        self.pages = {}
-        for Page in (SettingsPage, TradingPage):
-            page = Page(container, self)
-            page.grid(row=0, column=0, sticky="nsew")
-            self.pages[Page] = page
+        # Add pages to notebook
+        self.notebook.add(self.settings_page, text="Settings")
+        self.notebook.add(self.strategy_page, text="Strategy")
+        self.notebook.add(self.trading_page, text="Trading")
 
-        self.show_page(SettingsPage)
+        self.notebook.select(self.settings_page) # Start on the settings page
 
-    def show_page(self, page_cls):
-        self.pages[page_cls].tkraise()
+    def show_page(self, page_name: str):
+        """Selects a tab by its name."""
+        if page_name == "Trading":
+            self.notebook.select(self.trading_page)
+        elif page_name == "Strategy":
+            self.notebook.select(self.strategy_page)
+        elif page_name == "Settings":
+            self.notebook.select(self.settings_page)
 
     def _handle_account_update(self, summary: Dict[str, Any]):
         """Callback for the Trader to push account updates."""
@@ -84,6 +91,51 @@ class MainApplication(ThemedTk):
         finally:
             self.after(100, self._process_ui_queue)
 
+
+class StrategyPage(ttk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, padding=10)
+        self.controller = controller
+        self.columnconfigure(1, weight=1)
+
+        # --- Strategy Parameters ---
+        params_frame = ttk.Labelframe(self, text="Safe Strategy Parameters", padding=10)
+        params_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        params_frame.columnconfigure(1, weight=1)
+
+        self.vars = {
+            "ema_period": tk.IntVar(value=self.controller.settings.strategy.ema_period),
+            "atr_period": tk.IntVar(value=self.controller.settings.strategy.atr_period),
+            "adx_period": tk.IntVar(value=self.controller.settings.strategy.adx_period),
+            "rsi_period": tk.IntVar(value=self.controller.settings.strategy.rsi_period),
+            "adx_threshold": tk.IntVar(value=self.controller.settings.strategy.adx_threshold),
+            "rsi_overbought": tk.IntVar(value=self.controller.settings.strategy.rsi_overbought),
+            "rsi_oversold": tk.IntVar(value=self.controller.settings.strategy.rsi_oversold),
+            "stop_mult": tk.DoubleVar(value=self.controller.settings.strategy.stop_mult),
+            "target_mult": tk.DoubleVar(value=self.controller.settings.strategy.target_mult),
+            "buffer_mult": tk.DoubleVar(value=self.controller.settings.strategy.buffer_mult),
+        }
+
+        row = 0
+        for name, var in self.vars.items():
+            ttk.Label(params_frame, text=f"{name.replace('_', ' ').title()}:").grid(row=row, column=0, sticky="w", padx=(0, 5), pady=2)
+            ttk.Entry(params_frame, textvariable=var).grid(row=row, column=1, sticky="ew", pady=2)
+            row += 1
+
+        # --- Actions ---
+        actions = ttk.Frame(self)
+        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(actions, text="Save Strategy Settings", command=self.save_strategy_settings).pack(side="left", padx=5)
+
+    def save_strategy_settings(self):
+        try:
+            for name, var in self.vars.items():
+                setattr(self.controller.settings.strategy, name, var.get())
+
+            self.controller.settings.save()
+            messagebox.showinfo("Settings Saved", "Your strategy settings have been saved successfully.")
+        except (ValueError, tk.TclError) as e:
+            messagebox.showerror("Invalid Input", f"Please check your inputs. All values must be valid numbers.\n\nError: {e}")
 
 class SettingsPage(ttk.Frame):
     def __init__(self, parent, controller):
@@ -255,16 +307,14 @@ class SettingsPage(ttk.Frame):
         # No need to manually update it here.
 
         available_symbols = t.get_available_symbol_names()
-        trading_page = self.controller.pages[TradingPage]
         if available_symbols: # Ensure there are symbols before trying to populate
-            trading_page.populate_symbols_dropdown(available_symbols)
+            self.controller.trading_page.populate_symbols_dropdown(available_symbols)
         else:
             # If no symbols returned by trader (e.g. map empty), populate with empty/error message
-            trading_page.populate_symbols_dropdown([])
+            self.controller.trading_page.populate_symbols_dropdown([])
             self._log_to_trading_page("Warning: No symbols received from the trader to populate dropdown.")
 
-
-        self.controller.show_page(TradingPage)
+        self.controller.show_page("Trading")
 
     def _log_to_trading_page(self, message: str):
         """Helper to log messages to the TradingPage's output log if available."""
@@ -297,11 +347,6 @@ class TradingPage(ttk.Frame):
         self.rowconfigure(13, weight=1) # Adjusted log row index
         self.columnconfigure(1, weight=1)
 
-
-        # ← Settings button
-        ttk.Button(self, text="← Settings", command=lambda: controller.show_page(SettingsPage)).grid(
-            row=0, column=0, columnspan=2, pady=(0,10), sticky="w" # columnspan to align with other full-width elements
-        )
 
         # Account Info Display
         acc_info_frame = ttk.Labelframe(self, text="Account Information", padding=5)
@@ -356,13 +401,9 @@ class TradingPage(ttk.Frame):
         self.batch_profit_var = tk.DoubleVar(value=self.controller.settings.general.batch_profit_target)
         ttk.Entry(self, textvariable=self.batch_profit_var).grid(row=7, column=1, sticky="ew")
 
-        # Strategy selector
+        # Strategy display (no longer a selector)
         ttk.Label(self, text="Strategy:").grid(row=8, column=0, sticky="w", padx=(0,5))
-        self.strategy_var = tk.StringVar(value="Safe")
-        strategy_names = ["Safe", "Moderate", "Aggressive", "Momentum", "Mean Reversion"]
-        cb_strat = ttk.Combobox(self, textvariable=self.strategy_var, values=strategy_names, state="readonly")
-        cb_strat.grid(row=8, column=1, sticky="ew")
-        cb_strat.bind("<<ComboboxSelected>>", lambda e: self._update_data_readiness_display(execute_now=True))
+        ttk.Label(self, text="Safe Strategy (Configurable)").grid(row=8, column=1, sticky="w")
 
 
         # Data Readiness Display
@@ -429,26 +470,8 @@ class TradingPage(ttk.Frame):
                 self.after(2000, self._update_data_readiness_display)
             return
 
-        selected_strategy_name = self.strategy_var.get()
-        strategy_instance = None
-
-        # Instantiate the selected strategy to get its requirements
-        # This could be optimized by caching strategy instances or their requirements
-        if selected_strategy_name == "Safe": strategy_instance = SafeStrategy(self.controller.settings)
-        elif selected_strategy_name == "Moderate": strategy_instance = ModerateStrategy(self.controller.settings)
-        elif selected_strategy_name == "Aggressive": strategy_instance = AggressiveStrategy(self.controller.settings)
-        elif selected_strategy_name == "Momentum": strategy_instance = MomentumStrategy(self.controller.settings)
-        elif selected_strategy_name == "Mean Reversion": strategy_instance = MeanReversionStrategy(self.controller.settings)
-
-        if not strategy_instance:
-            self.data_readiness_var.set("Select a strategy")
-            if hasattr(self, 'data_readiness_label'):
-                self.data_readiness_label.config(foreground="black")
-            if hasattr(self, 'start_button'):
-                self.start_button.config(state="disabled")
-            if not execute_now:
-                self.after(1000, self._update_data_readiness_display)
-            return
+        # Since we only have one strategy, we can simplify this
+        strategy_instance = SafeStrategy(self.controller.settings)
 
         required_bars_map = strategy_instance.get_required_bars()
         symbol = self.symbol_var.get()
@@ -677,10 +700,8 @@ class TradingPage(ttk.Frame):
 
     def start_scalping(self):
         self._log("start_scalping() called")
-
-        # GET THE STRATEGY NAME, NOT THE OBJECT
-        strategy_name = self.strategy_var.get() 
-        self._log(f"Selected Strategy: {strategy_name}")
+        strategy = SafeStrategy(self.controller.settings)
+        self._log(f"Using Strategy: {strategy.NAME}")
 
         symbol = self.symbol_var.get().replace("/", "")
         tp     = self.tp_var.get()
@@ -698,29 +719,18 @@ class TradingPage(ttk.Frame):
         # Start real trading loop
         self.scalping_thread = threading.Thread(
             target=self._scalp_loop,
-            # PASS THE NAME OF THE STRATEGY, NOT THE OBJECT ITSELF
-            args=(symbol, tp, sl, size, strategy_name, batch_target),
+            args=(symbol, tp, sl, size, batch_target),
             daemon=True
         )
         self.scalping_thread.start()
 
         messagebox.showinfo("Scalping Started", f"Live scalping thread started for {symbol}")
 
-    def _scalp_loop(self, symbol: str, tp: float, sl: float, size: float, strategy_name: str, batch_target: float):
+    def _scalp_loop(self, symbol: str, tp: float, sl: float, size: float, batch_target: float):
         print("SCALP LOOP STARTED")
         self._log(f"Scalping loop started for symbol: {symbol}")
+        strategy = SafeStrategy(self.controller.settings)
         while self.is_scalping:
-            # THIS IS THE KEY CHANGE: CREATE A NEW STRATEGY OBJECT IN EVERY LOOP
-            if strategy_name == "Safe":
-                strategy = SafeStrategy(self.controller.settings)
-            elif strategy_name == "Moderate":
-                strategy = ModerateStrategy(self.controller.settings)
-            elif strategy_name == "Aggressive":
-                strategy = AggressiveStrategy(self.controller.settings)
-            elif strategy_name == "Mean Reversion":
-                strategy = MeanReversionStrategy(self.controller.settings)
-            else: # Momentum
-                strategy = MomentumStrategy(self.controller.settings)
 
             if self.current_batch_trades >= self.batch_size:
                 summary = self.trader.get_account_summary()
