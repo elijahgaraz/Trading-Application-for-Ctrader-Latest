@@ -167,106 +167,86 @@ class SafeStrategy(Strategy):
 
     def decide(self, symbol: str, data: Dict[str, Any], trader: "Trader") -> Dict[str, Any]:
         df: pd.DataFrame = data.get('ohlc_1m')
-        print("DECIDE() called - OHLC shape:", df.shape if df is not None else "None")
         if df is None or len(df) < self.settings.general.min_bars_for_trading:
-            print("Returning: insufficient data")
             return self._hold("insufficient data")
 
-
+        # --- Indicator Calculations ---
         close = df['close']
-        vol = df.get('volume', pd.Series(dtype=float))
-
-        # Indicators
-        ema = calculate_ema(df, self.ema_period).iloc[-1]
-        atr = calculate_atr(df, self.atr_period).iloc[-1]
         price = close.iloc[-1]
-        avg_vol = None if vol.empty else vol.rolling(self.atr_period).mean().iloc[-1]
+        pip_factor = 10000  # Assume standard pip factor, adjust for JPY pairs if needed
 
-        # Buffer zone filter
+        # Base strategy indicators
+        ema_long = calculate_ema(df, self.ema_period).iloc[-1]
+        atr = calculate_atr(df, self.atr_period).iloc[-1]
+        atr_pips = atr * pip_factor
+
+        # Filter indicators
+        adx_series = calculate_adx(df, 14)[f'ADX_14']
+        adx = adx_series.iloc[-1] if not adx_series.empty else 0
+        rsi = calculate_rsi(df, 14).iloc[-1]
+
+        # AI snapshot indicators
+        ema_fast = calculate_ema(df, 9).iloc[-1]
+        ema_slow = calculate_ema(df, 21).iloc[-1]
+
+        # --- Strategy Filters ---
+
+        # 1. Buffer Zone Filter
         buffer = atr * self.buffer_mult
-        if abs(price - ema) < buffer:
+        if abs(price - ema_long) < buffer:
             return self._hold("within buffer zone")
 
-        # Determine trade direction
-        if price > ema:
+        # 2. ADX Trend Strength Filter
+        if adx < 25:
+            return self._hold(f"ADX {adx:.2f} < 25, avoiding ranging market")
+
+        # 3. RSI Momentum Filter & Direction
+        if price > ema_long and rsi < 70:  # RSI not overbought
             action = 'buy'
-            comment = f"price {price:.5f} above EMA{self.ema_period} + buffer"
-        else:
+            comment = f"price {price:.5f} > EMA & RSI {rsi:.2f} < 70"
+        elif price < ema_long and rsi > 30:  # RSI not oversold
             action = 'sell'
-            comment = f"price {price:.5f} below EMA{self.ema_period} - buffer"
+            comment = f"price {price:.5f} < EMA & RSI {rsi:.2f} > 30"
+        else:
+            return self._hold(f"RSI out of bounds ({rsi:.2f})")
 
-        # Base stops
-        sl = atr * self.stop_mult
-        tp = atr * self.target_mult
-
-        # Convert offsets from price distance to pips (1 pip = 0.0001 for most pairs)
-        pip_factor = 10000  # Use 100 for JPY pairs like USDJPY
-        sl_pips = sl * pip_factor
-        tp_pips = tp * pip_factor
-
-        # Trailing stop logic
-        if not self.trailing_activated and (
-            (action == 'buy' and price > ema + 2 * buffer) or
-            (action == 'sell' and price < ema - 2 * buffer)
-        ):
-            self.trailing_activated = True
-            comment += "; trailing stop activated"
-
-        if self.trailing_activated:
-            breakeven_offset = atr * 0.1
-            prev_close = close.iloc[-2]
-            if action == 'buy':
-                sl = min(sl, price - (prev_close + breakeven_offset))
-            else:
-                sl = min(sl, (prev_close - breakeven_offset) - price)
-
-        # --- AI Overseer Integration ---
-        if trader.settings.ai.use_ai_overseer and action in ('buy', 'sell'):
-            # 1) Calculate all indicators for the AI snapshot
-            ema_fast = calculate_ema(df, 9).iloc[-1]
-            ema_slow = calculate_ema(df, 21).iloc[-1]
-            rsi = calculate_rsi(df, 14).iloc[-1]
-            adx_series = calculate_adx(df, 14)[f'ADX_14']
-            adx = adx_series.iloc[-1] if not adx_series.empty else 0
-            atr_pips = atr * pip_factor
-
-            # 2) Construct snapshot payload
+        # --- AI Overseer Confirmation ---
+        if trader.settings.ai.use_ai_overseer:
             snapshot = {
                 "symbol": symbol.replace("/", ""),
                 "bot_intent": action.upper(),
-                "timeframe": "m1", # Assuming m1, as we are using 1m ohlc data
+                "timeframe": "m1",
                 "price": price,
-                "spread_pips": 0.5, # Mocking spread, as it's not readily available
+                "spread_pips": 0.5,  # Mocking spread
                 "ema_fast": ema_fast,
                 "ema_slow": ema_slow,
                 "rsi": rsi,
                 "adx": adx,
                 "atr_pips": atr_pips
             }
-
-            # 3) Get AI advice
             ai_advice = trader.get_ai_advice(snapshot)
 
-            # 4) Act on AI advice
             if ai_advice:
                 ai_action_map = {'BUY': 'buy', 'SELL': 'sell'}
                 if ai_advice.confidence < trader.settings.ai.advisor_min_confidence:
-                    return self._hold(
-                        f"AI confidence {ai_advice.confidence:.2%} below threshold "
-                        f"({trader.settings.ai.advisor_min_confidence:.2%}). AI Reason: {ai_advice.reason}"
-                    )
-
+                    return self._hold(f"AI conf {ai_advice.confidence:.2%} below threshold. Reason: {ai_advice.reason}")
                 if ai_action_map.get(ai_advice.direction) != action:
-                    return self._hold(
-                        f"AI action '{ai_advice.direction}' contradicts strategy '{action}'. "
-                        f"AI Reason: {ai_advice.reason}"
-                    )
-
-                # If advice is good, augment the comment
-                comment += f" | AI Confirmed (Conf: {ai_advice.confidence:.2%}, Reason: {ai_advice.reason})"
+                    return self._hold(f"AI action '{ai_advice.direction}' contradicts strategy '{action}'. Reason: {ai_advice.reason}")
+                comment += f" | AI Confirmed (Conf: {ai_advice.confidence:.2%})"
             else:
-                # If AI fails to provide advice, revert to holding for safety
                 return self._hold("AI advisor failed to provide a valid response.")
+
+        # --- Stop-Loss and Take-Profit Calculation ---
+        sl_pips = atr * self.stop_mult * pip_factor
+        tp_pips = atr * self.target_mult * pip_factor
+
+        # Trailing stop logic (simplified, can be expanded)
+        if not self.trailing_activated and (
+            (action == 'buy' and price > ema_long + 2 * buffer) or
+            (action == 'sell' and price < ema_long - 2 * buffer)
+        ):
+            self.trailing_activated = True
+            comment += "; trailing stop activated"
 
         return {
             'action': action,
